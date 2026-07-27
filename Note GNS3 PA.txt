@@ -1,0 +1,204 @@
+====================================================================
+COMMANDES JOUR DE DEMO - MAQUETTE TECHNOVA GNS3
+====================================================================
+
+------------------------------------------------------------------
+0. AVANT DE COMMENCER
+------------------------------------------------------------------
+- Ouvrir le client GNS3, se connecter au serveur distant
+- Ouvrir le projet (PA-2 ou celui utilisé actuellement)
+- Verifier que TOUS les noeuds sont demarres (icones vertes) :
+  FW1-Edge-Paris, FW1-Edge-Backup, FW2-Interne-Paris,
+  FW2-Interne-Backup, FW-Lyon, Switch-Trunk-Paris-A/B (IOSvL2),
+  Cloud (Bastion), VPCS (SERVEURS / UTILISATEURS / SAUVEGARDE)
+- Se connecter en SSH sur la VM GNS3 via Tailscale :
+
+    ssh gns3@100.75.189.36
+
+------------------------------------------------------------------
+1. RELANCER L'ACCES DE MANAGEMENT (a faire a CHAQUE demarrage)
+------------------------------------------------------------------
+Sur la VM GNS3 (SSH) :
+
+    ~/setup-mgmt.sh
+
+Verifier que l'interface tap3 est UP avec l'IP 172.16.10.200 :
+
+    ip addr show tap3
+
+Verifier les routes vers tous les segments :
+
+    ip route | grep tap3
+
+Test de connectivite rapide (doit repondre) :
+
+    ping -c 3 172.16.10.1
+    ping -c 3 10.10.99.1
+    ping -c 3 10.20.0.1
+
+------------------------------------------------------------------
+2. OUVRIR LES TUNNELS SSH VERS LES GUI PFSENSE (depuis le PC Windows)
+------------------------------------------------------------------
+Un terminal PowerShell = un tunnel. Garder chaque terminal ouvert.
+
+FW1-Edge-Paris (WAN edge, MASTER) :
+    ssh -L 8444:172.16.10.1:443 gns3@100.75.189.36
+    -> https://localhost:8444
+
+FW1-Edge-Backup :
+    ssh -L 8445:172.16.10.3:443 gns3@100.75.189.36
+    -> https://localhost:8445
+
+FW2-Interne-Paris (MASTER, VLANs) :
+    ssh -L 8443:10.10.99.1:443 gns3@100.75.189.36
+    -> https://localhost:8443
+
+FW2-Interne-Backup :
+    ssh -L 8447:10.10.99.2:443 gns3@100.75.189.36
+    -> https://localhost:8447
+
+FW-Lyon :
+    ssh -L 8448:10.20.0.1:443 gns3@100.75.189.36
+    -> https://localhost:8448
+
+Identifiants pfSense par defaut : admin / pfsense
+(sauf si mot de passe change avant la demo)
+
+------------------------------------------------------------------
+3. DEMO CARP / HAUTE DISPONIBILITE
+------------------------------------------------------------------
+Sur les GUI (Status > CARP) :
+- Montrer FW1-Edge-Paris = MASTER, FW1-Edge-Backup = BACKUP
+- Montrer FW2-Interne-Paris = MASTER, FW2-Interne-Backup = BACKUP
+
+Pour demontrer un failover en LIVE (optionnel, impressionnant) :
+- Dans GNS3 : clic droit sur FW2-Interne-Paris > Stop
+- Rafraichir Status > CARP sur FW2-Interne-Backup
+  => il doit passer a MASTER en quelques secondes
+- Relancer FW2-Interne-Paris (clic droit > Start)
+  => il redevient MASTER apres quelques secondes
+
+------------------------------------------------------------------
+4. DEMO VLANs (SERVEURS / UTILISATEURS / SAUVEGARDE)
+------------------------------------------------------------------
+Sur chaque VPCS (console GNS3), verifier/reconfigurer l'IP si besoin :
+
+VPC SERVEURS (VLAN 10) :
+    ip 10.10.10.20/24 10.10.10.1
+    ping 10.10.10.1
+
+VPC UTILISATEURS (VLAN 20) :
+    ip 10.10.20.20/24 10.10.20.1
+    ping 10.10.20.1
+
+VPC SAUVEGARDE (VLAN 40) :
+    ip 10.10.40.20/24 10.10.40.1
+    ping 10.10.40.1
+
+Demo routage inter-VLAN (depuis n'importe lequel des 3 VPCS) :
+    ping 10.10.10.1
+    ping 10.10.20.1
+    ping 10.10.40.1
+
+------------------------------------------------------------------
+5. DEMO SPANNING TREE (redondance L2)
+------------------------------------------------------------------
+Sur la console de Switch-Trunk-Paris-A (IOSvL2) :
+
+    enable
+    show spanning-tree vlan 10
+
+=> Un port doit etre en Root/FWD, l'autre en Altn/BLK
+
+Pour demontrer le failover STP en LIVE :
+
+    configure terminal
+    interface GigabitEthernet1/0
+    shutdown
+    exit
+
+Puis attendre ~30 sec et relancer :
+
+    show spanning-tree vlan 10
+
+=> Le port Altn (Gi1/1) doit passer en Root/FWD
+
+Pour revenir a l'etat normal :
+
+    configure terminal
+    interface GigabitEthernet1/0
+    no shutdown
+    exit
+    end
+    write memory
+
+Attendre ~30 sec, revérifier :
+
+    show spanning-tree vlan 10
+
+=> Gi1/0 redevient Root/FWD, Gi1/1 repasse en Altn/BLK
+
+------------------------------------------------------------------
+6. DEMO VPN IPSEC PARIS <-> LYON
+------------------------------------------------------------------
+Sur les GUI FW1-Edge-Paris et FW-Lyon :
+    Status > IPsec > Overview
+
+=> Les deux doivent afficher "Established"
+
+Sur l'onglet SADs, montrer les compteurs Bytes-In/Out qui augmentent
+(preuve que du trafic chiffre a deja transite).
+
+Test de trafic reel en LIVE, depuis un VPC (ex: SERVEURS) :
+
+    ping 10.20.0.1
+
+=> Doit repondre (passe par FW2 -> route statique -> FW1 -> tunnel
+   IPsec -> FW-Lyon)
+
+Test aussi possible en shell sur FW1-Edge-Paris :
+
+    ping -c 3 -S 172.16.10.1 10.20.0.1
+
+------------------------------------------------------------------
+7. VERIFICATIONS RAPIDES EN CAS DE PROBLEME PENDANT LA DEMO
+------------------------------------------------------------------
+Si un GUI ne repond plus :
+    - Verifier que le tunnel SSH est toujours ouvert (terminal actif)
+    - Relancer : ~/setup-mgmt.sh
+    - Verifier : ip addr show tap3 (doit etre UP avec IP)
+
+Si le ping entre deux firewalls ne passe pas :
+    - Verifier que pf est actif :
+        pfctl -s info | grep -i status
+    - Verifier les regles bloquantes :
+        pfctl -s rules | grep -i block
+
+Si le tunnel IPsec est Disconnected :
+    - Sur Status > IPsec, cliquer "Connect P1 and P2s"
+
+Si le VPC ne ping pas sa passerelle :
+    - Reconfigurer son IP (voir section 4)
+
+------------------------------------------------------------------
+8. RECAPITULATIF DES IP CLES DE LA MAQUETTE
+------------------------------------------------------------------
+FW1-Edge-Paris        WAN 192.168.1.92   LAN 172.16.10.1
+FW1-Edge-Backup       WAN 192.168.1.94   LAN 172.16.10.3
+VIP CARP FW1 (LAN)                        172.16.10.5
+
+FW2-Interne-Paris     WAN 172.16.10.2    LAN 10.10.99.1
+FW2-Interne-Backup    WAN 172.16.10.4    LAN 10.10.99.2
+VIP CARP FW2 (LAN)                        10.10.99.5
+
+VLAN 10 SERVEURS       10.10.10.0/24  (GW 10.10.10.1)
+VLAN 20 UTILISATEURS   10.10.20.0/24  (GW 10.10.20.1)
+VLAN 40 SAUVEGARDE     10.10.40.0/24  (GW 10.10.40.1)
+
+FW-Lyon                WAN 192.168.1.93   LAN 10.20.0.1
+
+Bastion / Management (tap3 sur VM GNS3)   172.16.10.200
+
+====================================================================
+FIN DE LA LISTE
+====================================================================

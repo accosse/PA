@@ -1,0 +1,427 @@
+================================================================================
+                    CHEAT-SHEET DÉMO — TECHNOVA (20 min)
+================================================================================
+
+
+================================================================================
+🔧 PRÉ-DÉMO (30 min avant le jury)
+================================================================================
+
+1. Sur ton PC — Vérifier Tailscale actif
+   -------------------------------------
+   tailscale status
+   → Doit montrer que t'es connecté au tailnet.
+
+
+2. Sur ton PC — Lancer le tunnel SSH multi-ports
+   ---------------------------------------------
+   ssh -p 2222 -L 8080:192.168.20.30:8080 -L 8081:192.168.20.30:8081 -L 9444:192.168.20.30:9443 technova@100.80.36.111
+
+   ⚠️ LAISSE CETTE CMD OUVERTE !
+
+
+3. Sur ton PC — Vérifier tunnel actif (autre CMD)
+   ----------------------------------------------
+   netstat -ano | findstr LISTENING | findstr "8080 8081 9444"
+   → Doit voir 3 lignes LISTENING.
+
+
+4. Ouvrir navigateur en NAVIGATION PRIVÉE (Ctrl+Shift+N)
+   -----------------------------------------------------
+   Onglets à préparer :
+     - http://localhost:8080   → nginx
+     - http://localhost:8081   → phpMyAdmin
+     - https://localhost:9444  → Portainer
+
+
+5. Vérifier tous les services répondent
+   -------------------------------------
+   curl -I http://localhost:8080
+   curl -I http://localhost:8081
+
+
+6. Préparer 3 CMD séparées
+   ------------------------
+   CMD 1 : Tunnel SSH (à laisser ouverte, ne rien taper)
+   CMD 2 : SSH admin (pour les commandes de démo)
+   CMD 3 : Backup en cas de problème
+
+
+7. Cleanup avant démo
+   ------------------
+   Sur AD (ssh ad), en PowerShell :
+
+   Remove-ADUser -Identity mnouvelle -Confirm:$false
+   Get-ADUser -Filter "SamAccountName -eq 'mnouvelle'"
+   → Doit retourner vide
+
+
+================================================================================
+🎬 ACTE 1 — ACCÈS SÉCURISÉ (3 min)
+================================================================================
+
+PITCH D'INTRO :
+"Je vais vous présenter comment un administrateur accède de manière sécurisée
+à notre infrastructure TechNova."
+
+
+1.1 Prouver l'isolation — Ping direct impossible
+------------------------------------------------
+Sur ton PC (CMD 2) :
+
+   ping 192.168.20.30
+
+→ ❌ TIMEOUT (pas d'accès direct)
+
+ARGUMENT :
+"Aucune ressource interne n'est directement accessible. Zero Trust appliqué."
+
+
+1.2 Accès via Bastion + Tailscale
+---------------------------------
+   ssh bastion
+
+→ Connecté à technova@bastion:~$
+
+ARGUMENT :
+"Passage obligatoire par le Bastion via Tailscale (WireGuard). Auth par clé
+SSH ED25519, aucun port SSH exposé sur Internet."
+
+
+1.3 Prouver le durcissement
+---------------------------
+Sur le Bastion :
+
+   sudo sshd -T | grep -iE "^port|permitroot|passwordauth|pubkeyauth|maxauth|allowusers"
+   sudo fail2ban-client status sshd
+   last -n 5
+
+ARGUMENT :
+"Port 2222, no root, no password, clé publique uniquement, fail2ban actif.
+Journalisation complète."
+
+
+================================================================================
+🎬 ACTE 2 — CRÉATION USER AD (4 min)
+================================================================================
+
+PITCH :
+"Le service RH demande la création d'un compte pour Marie Nouvelle,
+nouvelle collaboratrice en Comptabilité."
+
+
+2.1 Connexion SSH à l'AD Windows
+--------------------------------
+Sur ton PC (nouvelle CMD ou après exit) :
+
+   ssh ad
+
+Tape le mdp Administrateur → PROMPT POWERSHELL DIRECT
+
+
+2.2 Vérifier le domaine
+-----------------------
+   whoami
+   Get-ADDomain | Format-List Name, Forest, DomainMode, PDCEmulator
+
+ARGUMENT :
+"Domaine technova.local, mode Windows Server 2016, admin nominal."
+
+
+2.3 Créer Marie Nouvelle LIVE
+-----------------------------
+   $pwd = ConvertTo-SecureString "Password2026!" -AsPlainText -Force
+
+   New-ADUser -Name "Marie Nouvelle" `
+     -SamAccountName "mnouvelle" `
+     -UserPrincipalName "mnouvelle@technova.local" `
+     -EmailAddress "mnouvelle@technova.local" `
+     -Path "OU=Utilisateurs,OU=TechNova,DC=technova,DC=local" `
+     -AccountPassword $pwd `
+     -Enabled $true `
+     -ChangePasswordAtLogon $true `
+     -Department "Comptabilité"
+
+   Add-ADGroupMember -Identity "GG_Compta" -Members mnouvelle
+
+   Get-ADUser -Identity mnouvelle -Properties Department, MemberOf | Format-List Name, Enabled, Department, MemberOf
+
+ARGUMENT :
+"En 3 commandes : compte créé, activé, positionné dans OU Comptabilité,
+ajouté au groupe métier. Prêt à recevoir des mails."
+
+
+2.4 Test DNS
+------------
+   Resolve-DnsName mail.technova.local
+   Resolve-DnsName docker.technova.local
+   Resolve-DnsName bastion.technova.local
+
+ARGUMENT :
+"DNS AD interne opérationnel avec zones directes et inverses."
+
+
+Puis sortir :
+   exit
+
+
+================================================================================
+🎬 ACTE 3 — TEST SMTP (3 min)
+================================================================================
+
+PITCH :
+"Vérifions que Marie peut recevoir des mails via notre relais interne."
+
+
+3.1 Reconnexion Bastion
+-----------------------
+   ssh bastion
+
+
+3.2 Test connectivité SMTP par nom DNS
+--------------------------------------
+   nc -vz mail.technova.local 25
+
+→ Doit répondre : "Connection to mail.technova.local 25 port [tcp/smtp] succeeded!"
+
+ARGUMENT :
+"DNS interne résout mail.technova.local vers 192.168.20.40.
+Connexion TCP autorisée par pfSense-Interne."
+
+
+3.3 Envoi mail de bienvenue à Marie
+-----------------------------------
+   swaks --to mnouvelle@4src.technova.local \
+         --from rh@technova.local \
+         --server mail.technova.local \
+         --header "Subject: Bienvenue chez TechNova" \
+         --body "Bienvenue Marie ! Vos accès sont configurés."
+
+→ Doit voir : "250 2.0.0 Ok: queued as XXXXXXXX"
+
+ARGUMENT :
+"Conversation SMTP complète : EHLO, MAIL FROM, RCPT TO accepté grâce aux
+alias Postfix, DATA, queued."
+
+
+3.4 Preuve de livraison
+-----------------------
+Sors du Bastion (exit), reconnecte sur SMTP :
+
+   ssh smtp
+
+Puis :
+
+   sudo tail -10 /var/log/mail.log | grep -E "connect from|orig_to|status=sent"
+   mail
+
+ARGUMENT :
+"orig_to conserve l'adresse Marie, alias appliqué vers technova,
+status=sent (delivered to mailbox). Livraison bout-en-bout validée."
+
+Quitte mail avec : q
+
+
+================================================================================
+🎬 ACTE 4 — DOCKER & CONTENEURISATION (5 min)
+================================================================================
+
+PITCH :
+"Notre stack applicative est conteneurisée pour la portabilité."
+
+
+4.1 Connexion admin Docker
+--------------------------
+   exit
+   ssh docker-admin
+
+ARGUMENT :
+"Compte technovaadmin dédié, ProxyJump automatique via Bastion,
+authentification par clé."
+
+
+4.2 Vérifier les droits
+-----------------------
+   whoami
+   groups
+
+→ technovaadmin sudo docker
+
+ARGUMENT :
+"Compte admin distinct de root et de technova, membre des groupes sudo et
+docker. Traçabilité nominative dans auth.log."
+
+
+4.3 État de la stack
+--------------------
+   cd /opt/docker-stacks/webapp/
+   docker compose ps
+   cat docker-compose.yml | head -30
+
+ARGUMENT :
+"Stack multi-services orchestrée par Docker Compose : nginx frontal,
+MariaDB base de données, phpMyAdmin admin. Fichier YAML versionnable Git,
+secrets externalisés dans .env chmod 640."
+
+
+4.4 DNS interne Docker
+----------------------
+   docker compose exec nginx ping -c 2 mariadb
+
+ARGUMENT :
+"nginx résout mariadb par nom de service grâce au DNS embarqué de Docker.
+Réseau bridge isolé webapp_technova."
+
+
+4.5 Persistance des données MariaDB
+-----------------------------------
+   docker compose exec mariadb mariadb -u root -pTechNova2026! -e "
+   USE technova_db;
+   CREATE TABLE IF NOT EXISTS demo_soutenance (id INT, message VARCHAR(200));
+   INSERT INTO demo_soutenance VALUES (1, 'Démo TechNova - persistance validée');
+   SELECT * FROM demo_soutenance;
+   "
+
+   docker compose restart mariadb
+   sleep 5
+
+   docker compose exec mariadb mariadb -u root -pTechNova2026! -e "
+   SELECT * FROM technova_db.demo_soutenance;
+   "
+
+ARGUMENT :
+"Après restart complet, les données subsistent grâce au volume nommé
+mariadb_data. C'est la persistance stateful."
+
+
+================================================================================
+🎬 ACTE 5 — INTERFACES WEB (2 min)
+================================================================================
+
+PITCH :
+"Toutes les interfaces web passent obligatoirement par le tunnel SSH depuis
+le Bastion — aucune exposition directe."
+
+
+5.1 Basculer sur navigateur
+---------------------------
+Onglets déjà ouverts (rafraîchir) :
+
+   http://localhost:8080   → nginx (page d'accueil)
+   http://localhost:8081   → phpMyAdmin (login: root / TechNova2026!)
+   https://localhost:9444  → Portainer (dashboard)
+
+
+5.2 Prouver le pattern Bastion dans les logs
+--------------------------------------------
+Retour sur CMD 2 SSH docker-admin :
+
+   docker compose logs nginx | tail -10
+
+ARGUMENT :
+"Regardez l'IP source des requêtes : 192.168.30.20 — c'est le Bastion.
+Aucune requête ne vient directement de mon poste. Preuve concrète que tout
+transite par notre pivot d'admin."
+
+
+5.3 Aperçu Portainer
+--------------------
+Dans le navigateur, montre le dashboard Portainer avec les 4 conteneurs Up.
+
+ARGUMENT :
+"Portainer CE pour l'admin graphique. Multi-environnements
+(Docker, Swarm, K8s) — évolutif. Open source, léger, adopté en production."
+
+
+================================================================================
+🎬 CONCLUSION (1 min)
+================================================================================
+
+PITCH FINAL :
+
+"Vous avez vu concrètement comment notre infrastructure TechNova gère
+un cas d'entreprise :
+
+  - Nouvel utilisateur créé et intégré à l'AD + mail en 3 min
+  - Chaîne mail sécurisée validée bout-en-bout
+  - Application conteneurisée déployée avec persistance
+  - Aucune connexion directe — tout passe par le Bastion (Zero Trust)
+  - Aucun usage direct de root — traçabilité complète
+  - Segmentation VLAN stricte — anti-mouvement latéral
+
+L'architecture répond aux exigences du cahier des charges.
+Je réponds maintenant à vos questions."
+
+
+================================================================================
+🚨 PLAN B — Si un truc plante
+================================================================================
+
+TUNNEL SSH TOMBE
+----------------
+Nouvelle CMD :
+   ssh -p 2222 -L 8080:192.168.20.30:8080 -L 8081:192.168.20.30:8081 -L 9444:192.168.20.30:9443 technova@100.80.36.111
+
+
+VM NE RÉPOND PAS
+----------------
+"Petit incident temporaire, on passe à la brique suivante.
+Voici les screenshots des tests validés en amont."
+→ Sors les screenshots backup.
+
+
+docker compose up ÉCHOUE
+------------------------
+   docker compose down
+   docker compose up -d
+   docker compose ps
+
+
+AD SSH REFUSE LA CONNEXION
+--------------------------
+Redémarre le service depuis RDP :
+   Restart-Service sshd
+
+
+MARIE NOUVELLE EXISTE DÉJÀ (erreur "already exists")
+----------------------------------------------------
+   Remove-ADUser -Identity mnouvelle -Confirm:$false
+   → Puis relance la création
+
+
+NE PANIQUE JAMAIS
+-----------------
+Un admin pro assume les incidents. Reste calme, explique ce qui se passe,
+montre les screenshots backup.
+
+
+================================================================================
+📋 CHECKLIST FINALE — 5 min avant démo
+================================================================================
+
+[ ] Tailscale actif sur PC
+[ ] Tunnel SSH ouvert (CMD 1, à ne pas fermer)
+[ ] 3 onglets navigateur préparés (nginx / phpMyAdmin / Portainer) en nav privée
+[ ] Marie Nouvelle supprimée (pour recréation live)
+[ ] Toutes les VMs Up (Proxmox web)
+[ ] Docker : tous conteneurs Up
+[ ] SMTP : mail.log accessible
+[ ] AD : service sshd actif
+[ ] Screenshots backup dans un dossier accessible
+[ ] Ce cheat-sheet imprimé/ouvert à côté
+
+
+================================================================================
+🎯 LES 5 COMMANDES CLÉS À NE PAS OUBLIER
+================================================================================
+
+1. ssh bastion                                      → point d'entrée
+2. ssh ad                                           → AD Windows PowerShell
+3. swaks --to mnouvelle@4src.technova.local ...     → test SMTP
+4. ssh docker-admin                                 → admin Docker
+5. docker compose ps                                → état stack
+
+
+================================================================================
+                              BONNE SOUTENANCE !
+================================================================================
